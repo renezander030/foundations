@@ -1,4 +1,6 @@
-# foundations
+<p align="center">
+  <img src="assets/foundations-logo.png" alt="foundations" width="440">
+</p>
 
 **Check your own network before you google.**
 

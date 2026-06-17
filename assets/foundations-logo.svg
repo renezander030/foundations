@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 300" width="1000" height="300">
+  <rect width="1000" height="300" fill="#ffffff"/>
+  <g fill="none" stroke="#0a0a0a" stroke-width="5">
+    <!-- emblem: person inside concentric trust rings with 4 network nodes -->
+    <circle cx="160" cy="150" r="112"/>
+    <circle cx="160" cy="150" r="72" stroke-width="3" stroke-dasharray="6 8"/>
+    <!-- person -->
+    <circle cx="160" cy="134" r="21" stroke-width="4"/>
+    <path d="M126 192 C126 158 194 158 194 192" stroke-width="4"/>
+  </g>
+  <g fill="#ffffff" stroke="#0a0a0a" stroke-width="5">
+    <!-- 4 network nodes on the outer ring -->
+    <circle cx="160" cy="38" r="20"/>
+    <circle cx="272" cy="150" r="20"/>
+    <circle cx="160" cy="262" r="20"/>
+    <circle cx="48" cy="150" r="20"/>
+  </g>
+  <text x="332" y="196" font-family="Poppins,Inter,system-ui,sans-serif" font-size="128" font-weight="600" letter-spacing="-3" fill="#0a0a0a">foundations</text>
+</svg>
