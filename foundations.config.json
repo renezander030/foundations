@@ -1,0 +1,41 @@
+{
+  "_comment": "Bundled DEMO config. Paths are relative to this file and point at ./demo so `foundations check \"vector search\"` works out of the box. Copy foundations.config.example.json and edit it to point at your real tools and folders.",
+  "proven": {
+    "bin": "./demo/bin",
+    "trust": "proven",
+    "kind": "tool",
+    "why": "installed CLI, liveness-checked (runs, exit 0)",
+    "liveness": ["help", "--help"]
+  },
+  "sources": [
+    {
+      "name": "tasks",
+      "type": "command",
+      "kind": "claim",
+      "why": "tasks are intentions you noted, not validated working",
+      "search": { "cmd": "./demo/bin/tasks-demo", "args": ["search", "{query}"] },
+      "map": { "id": "id", "title": "title", "score": "score" }
+    },
+    {
+      "name": "notes",
+      "type": "files",
+      "kind": "note",
+      "why": "prior knowledge, may be stale; verify before relying",
+      "roots": ["./demo/notes"],
+      "exts": [".md"]
+    },
+    {
+      "name": "repos",
+      "type": "files",
+      "kind": "code",
+      "why": "source is present, not confirmed to run/work",
+      "roots": ["./demo/repos"],
+      "exts": [".js", ".ts", ".tsx", ".jsx", ".py", ".sh", ".go", ".md", ".json", ".html", ".css", ".yaml", ".yml", ".txt"]
+    }
+  ],
+  "external": [
+    { "name": "WebSearch / WebFetch", "trust": "untrusted", "why": "external; validate before trusting" },
+    { "name": "MCP tools / package registries", "trust": "untrusted", "why": "external; validate before trusting" }
+  ],
+  "stopwords": ["the", "and", "for", "with", "that", "this", "from", "into", "your", "our", "are", "was", "how", "can", "does", "what", "when", "where", "why", "who", "build", "make", "use", "using", "need", "want", "idea", "new"]
+}

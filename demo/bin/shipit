@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+# shipit — demo CLI: deploy and roll back releases.
+# (A stand-in so the PROVEN tier has something real to liveness-check.)
+case "$1" in
+  help|--help|"")
+    echo "shipit — deploy and rollback releases"
+    echo "Usage: shipit deploy <env> | shipit rollback <env>"
+    exit 0 ;;
+  *)
+    echo "shipit: (demo) command: $*"
+    exit 0 ;;
+esac

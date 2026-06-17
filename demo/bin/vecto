@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+# vecto — demo CLI: local vector search and embeddings index.
+# (A stand-in so the PROVEN tier has something real to liveness-check.)
+case "$1" in
+  help|--help|"")
+    echo "vecto — local vector search / embeddings index"
+    echo "Usage: vecto search <query>   (vector search over the local embeddings index)"
+    exit 0 ;;
+  search)
+    echo "vecto: (demo) would run a vector search for: $2"
+    exit 0 ;;
+  *)
+    echo "vecto: unknown command: $1" >&2
+    exit 1 ;;
+esac

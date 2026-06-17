@@ -1,0 +1,36 @@
+{
+  "name": "foundations-cli",
+  "version": "0.1.0",
+  "description": "Check your own network before you google. A trust-ordered sweep of your proven tools, notes and code, so your AI agent (and you) build on practice, not loose ends.",
+  "type": "module",
+  "bin": {
+    "foundations": "bin/foundations"
+  },
+  "scripts": {
+    "demo": "node bin/foundations check \"vector search caching\" --human",
+    "test": "node bin/foundations check \"vector search caching deploy\" --human"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "ai-agent",
+    "llm",
+    "claude",
+    "cli",
+    "context-engineering",
+    "trust",
+    "knowledge-graph",
+    "best-practices"
+  ],
+  "license": "MIT",
+  "files": [
+    "bin",
+    "lib",
+    "demo",
+    "foundations.config.json",
+    "foundations.config.example.json",
+    "README.md",
+    "LICENSE"
+  ]
+}

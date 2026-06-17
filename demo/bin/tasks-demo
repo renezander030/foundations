@@ -1,0 +1,31 @@
+#!/usr/bin/env node
+// tasks-demo — a stand-in "task CLI" for the bundled demo.
+// Emits a JSON array so foundations can treat it as a `command` source.
+// In your real config, replace this with your own task/issue/notes CLI that
+// can print JSON (e.g. `your-task-cli search "<query>" --json`).
+const TASKS = [
+  { id: 'T-101', title: 'Spike: vector search index for product search', tags: 'vector search embeddings index' },
+  { id: 'T-102', title: 'Add a caching layer in front of the search API', tags: 'caching cache ttl search api' },
+  { id: 'T-103', title: 'Write a deploy rollback runbook', tags: 'deploy rollback release runbook' },
+  { id: 'T-104', title: 'Evaluate embeddings models for semantic search', tags: 'embeddings semantic search model' },
+  { id: 'T-105', title: 'Investigate flaky retry logic in the worker', tags: 'retry worker queue reliability' },
+  { id: 'T-106', title: 'Set up a cron job for the nightly index rebuild', tags: 'cron index rebuild schedule' },
+];
+const [, , cmd, ...rest] = process.argv;
+if (cmd === 'help' || cmd === '--help' || !cmd) {
+  console.error('tasks-demo — demo task source\nUsage: tasks-demo search "<query>"');
+  process.exit(0);
+}
+if (cmd === 'search') {
+  const q = rest.join(' ').toLowerCase();
+  const ts = q.split(/[^a-z0-9]+/).filter(w => w.length >= 3);
+  const scored = TASKS.map(t => {
+    const hay = `${t.title} ${t.tags}`.toLowerCase();
+    const score = ts.reduce((n, w) => n + (hay.includes(w) ? 1 : 0), 0);
+    return { id: t.id, title: t.title, score };
+  }).filter(t => !ts.length || t.score > 0).sort((a, b) => b.score - a.score);
+  process.stdout.write(JSON.stringify(scored));
+  process.exit(0);
+}
+console.error(`unknown command: ${cmd}`);
+process.exit(1);

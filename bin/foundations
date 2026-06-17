@@ -1,0 +1,299 @@
+#!/usr/bin/env node
+// foundations — investigate YOUR OWN network before deep-diving any idea.
+//
+// For any new idea, see at a glance what is PROVEN WORKING vs what is merely
+// READ/CLAIMED, vs what is UNTRUSTED external. So you build on practice, not
+// loose ends. The trust order is the whole point: your own proven results
+// first, your notes and code next, the open web last.
+//
+//   foundations check "<idea>"  [-k N] [--source <names>] [--human]
+//   foundations "<idea>"        (shorthand for check)
+//   foundations sources         what gets swept, and each source's trust class
+//   foundations help
+//
+// Trust tiers (always explicit in the output):
+//   proven    — installed CLI/tool that actually RAN (liveness-checked, exit 0)
+//   unverified— found in your network, NOT validated: command sources (claim)
+//               / files (note / code). Treat as leads; validate before relying.
+//   untrusted — external escalation (web / MCP / registries). Only after the
+//               local sweep, and labeled untrusted until you validate it.
+//
+// Sources are config-driven (foundations.config.json). Two source types:
+//   "command" — run a CLI that emits a JSON array; map its fields (id/title/...)
+//   "files"   — bounded, pure-Node text search over local roots
+// Ship your own config to point at your real tools; the bundled config points
+// at ./demo so `foundations check "vector search"` works out of the box.
+
+import fs from 'fs';
+import path from 'path';
+import { spawnSync } from 'child_process';
+import * as fdn from '../lib/foundation.js';
+
+const DIR = fdn.dirOf(import.meta.url);
+// config: explicit --config, else FOUNDATIONS_CONFIG, else repo-root default.
+const CFG_PATH = process.env.FOUNDATIONS_CONFIG
+  || path.resolve(DIR, '..', 'foundations.config.json');
+const CFG_DIR = path.dirname(CFG_PATH);
+const CFG = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
+
+// Resolve a configured path relative to the config file's directory (so demo
+// paths and your own relative paths are portable). Absolute paths pass through.
+function resolvePath(p) {
+  return path.isAbsolute(p) ? p : path.resolve(CFG_DIR, p);
+}
+function terms(q) {
+  const sw = new Set(CFG.stopwords || []);
+  return [...new Set(q.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 3 && !sw.has(w)))];
+}
+function sh(cmd, args, timeout = 15000) {
+  try {
+    const r = spawnSync(cmd, args, { encoding: 'utf8', timeout, maxBuffer: 1 << 24 });
+    return { ok: r.status === 0, out: r.stdout || '', err: r.stderr || '', status: r.status };
+  } catch (e) { return { ok: false, out: '', err: e.message, status: -1 }; }
+}
+function tryJSON(s) { try { return JSON.parse(s); } catch { return null; } }
+function get(obj, key) { return key ? key.split('.').reduce((o, k) => (o == null ? o : o[k]), obj) : undefined; }
+
+// ---- UNVERIFIED · command source -------------------------------------------
+// Runs a configured command that prints a JSON array, then maps fields via
+// src.map. {query} in any arg is replaced with the idea. This is how you wire a
+// real tool (a task CLI, a content search, an issue tracker) without code.
+function sweepCommand(src, q, k) {
+  const spec = src.search || {};
+  if (!spec.cmd) return [];
+  const args = (spec.args || []).map(a => a.replace(/\{query\}/g, q).replace(/\{k\}/g, String(k)));
+  const cmd = /[\/\\]/.test(spec.cmd) ? resolvePath(spec.cmd) : spec.cmd; // path -> resolve, bare name -> PATH
+  const r = sh(cmd, args, spec.timeout || 10000);
+  const arr = tryJSON(r.out) || [];
+  const m = src.map || {};
+  const out = [];
+  const seen = new Set();
+  for (const t of arr.slice(0, k)) {
+    const id = m.id ? get(t, m.id) : undefined;
+    if (id != null) { if (seen.has(id)) continue; seen.add(id); }
+    out.push({
+      trust: 'unverified', kind: src.kind || 'claim', source: src.name,
+      id, title: m.title ? get(t, m.title) : undefined,
+      url: m.url ? get(t, m.url) : undefined,
+      score: m.score ? get(t, m.score) : undefined,
+    });
+  }
+  return out.slice(0, k);
+}
+
+// ---- UNVERIFIED · files source ---------------------------------------------
+// Pure-Node bounded file search (no external `grep`/`rg` — self-contained).
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'public',
+  'vendor', '__pycache__', '.cache', '.venv', 'target', 'coverage']);
+function walkSearch(q, k, roots, kind, source, opts = {}) {
+  const ts = terms(q); if (!ts.length) return [];
+  const exts = opts.exts || null;          // Set of '.ext' or null = any
+  const maxSize = opts.maxSize || 262144;
+  const maxScan = opts.maxScan || 6000;
+  const hits = []; let scanned = 0;
+  const stack = [...roots];
+  while (stack.length) {
+    if (scanned > maxScan) break;
+    const cur = stack.pop();
+    let st; try { st = fs.statSync(cur); } catch { continue; }
+    if (st.isDirectory()) {
+      if (SKIP_DIRS.has(cur.split('/').pop())) continue;
+      let entries; try { entries = fs.readdirSync(cur); } catch { continue; }
+      for (const e of entries) stack.push(`${cur}/${e}`);
+      continue;
+    }
+    if (!st.isFile() || st.size > maxSize) continue;
+    if (exts) { const dot = cur.lastIndexOf('.'); if (!exts.has(dot >= 0 ? cur.slice(dot).toLowerCase() : '')) continue; }
+    scanned++;
+    let content; try { content = fs.readFileSync(cur, 'utf8'); } catch { continue; }
+    const low = content.toLowerCase();
+    const matched = ts.filter(t => low.includes(t));
+    if (!matched.length) continue;
+    // rank: distinct terms in content + filename matches weigh double (intent signal)
+    const base = cur.split('/').pop().toLowerCase();
+    const fnameHits = ts.filter(t => base.includes(t)).length;
+    const score = matched.length + fnameHits * 2;
+    // best line = the line covering the most distinct query terms
+    const lines = content.split('\n');
+    let best = { i: 0, n: 0 };
+    for (let i = 0; i < lines.length; i++) {
+      const ll = lines[i].toLowerCase();
+      const n = ts.reduce((a, t) => a + (ll.includes(t) ? 1 : 0), 0);
+      if (n > best.n) best = { i, n };
+      if (n === ts.length) break;
+    }
+    hits.push({ trust: 'unverified', kind, source, file: cur, line: best.i + 1,
+      text: lines[best.i].trim().slice(0, 160), score, terms: matched.length });
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return hits.slice(0, k);
+}
+function sweepFiles(src, q, k) {
+  const roots = (src.roots || []).map(resolvePath);
+  const exts = src.exts ? new Set(src.exts.map(e => e.toLowerCase())) : null;
+  return walkSearch(q, k, roots, src.kind || 'note', src.name, { exts });
+}
+
+// ---- PROVEN tier: installed CLIs relevant to the idea, liveness-checked -----
+function sweepProven(q, k) {
+  const ts = terms(q); if (!ts.length) return [];
+  const cfg = CFG.proven || {};
+  const binDir = cfg.bin ? resolvePath(cfg.bin) : null;
+  if (!binDir) return [];
+  let names = [];
+  try { names = fs.readdirSync(binDir); } catch { return []; }
+  const liveness = cfg.liveness && cfg.liveness.length ? cfg.liveness : ['help', '--help'];
+  const cand = [];
+  for (const name of names) {
+    const link = `${binDir}/${name}`;
+    let target = link, header = '';
+    try { target = fs.realpathSync(link); } catch {}
+    try { header = fs.readFileSync(target, 'utf8').slice(0, 1200).toLowerCase(); } catch {}
+    const hay = `${name} ${target} ${header}`.toLowerCase();
+    const score = ts.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
+    if (score > 0) cand.push({ name, link, target, score });
+  }
+  cand.sort((a, b) => b.score - a.score);
+  const proven = [];
+  for (const c of cand.slice(0, k)) {
+    // liveness: actually run it (by full path, so it need not be on PATH).
+    // proven only if it executes cleanly.
+    let live = { ok: false, status: -1 };
+    let used = liveness[0];
+    for (const verb of liveness) {
+      const r = sh(c.link, [verb], 5000);
+      if (r.ok) { live = r; used = verb; break; }
+      live = r;
+    }
+    proven.push({
+      trust: live.ok ? 'proven' : 'unverified',
+      kind: live.ok ? 'tool' : 'tool-present',
+      source: 'installed-cli',
+      name: c.name, target: c.target,
+      basis: live.ok ? `ran '${c.name} ${used}' (exit 0)`
+        : `present but did not run cleanly (status ${live.status})`,
+      prove: `${c.name} ${used}`,
+    });
+  }
+  return proven;
+}
+
+const commands = {};
+
+commands.check = async (args, { human }) => {
+  const { flags, positional } = fdn.parseArgs(args, ['k', 'source']);
+  const q = positional.join(' ').trim();
+  if (!q) { console.error('Usage: foundations check "<idea>" [-k N] [--source <names>]'); process.exit(2); }
+  const k = parseInt(flags.k, 10) || 5;
+  const only = flags.source ? new Set(String(flags.source).split(',')) : null;
+  const want = name => !only || only.has(name);
+
+  const proven = want('proven') ? sweepProven(q, k) : [];
+  const provenOnly = proven.filter(p => p.trust === 'proven');
+
+  // unverified sources, in declared config order
+  const unverified = [];
+  for (const src of (CFG.sources || [])) {
+    if (!want(src.name)) continue;
+    const rows = src.type === 'command' ? sweepCommand(src, q, k)
+      : src.type === 'files' ? sweepFiles(src, q, k) : [];
+    unverified.push({ src, rows });
+  }
+
+  const unverifiedCount = unverified.reduce((n, s) => n + s.rows.length, 0)
+    + proven.filter(p => p.trust !== 'proven').length;
+  const verdict = provenOnly.length ? 'proven-tooling-exists'
+    : unverifiedCount ? 'unverified-leads-only'
+    : 'no-local-coverage';
+  const recommendation = {
+    'proven-tooling-exists': 'You already have PROVEN tooling for this. Build on it; do not reinvent. Verify each lead before trusting it.',
+    'unverified-leads-only': 'Leads exist in your network but NONE are validated. Verify a lead (run it / test it) before building, or escalate to external sources.',
+    'no-local-coverage': 'No local coverage. Clear to escalate to external sources (web / MCP) — treat their results as UNTRUSTED until validated.',
+  }[verdict];
+
+  const result = {
+    query: q,
+    verdict,
+    recommendation,
+    proven: provenOnly,
+    unverified: Object.fromEntries(unverified.map(s => [s.src.name, s.rows])),
+    tools_present: proven.filter(p => p.trust !== 'proven'),
+    external_next: CFG.external || [],
+  };
+
+  if (!human) { fdn.out(result); return; }
+
+  const L = [];
+  L.push(`\nIDEA: "${q}"`);
+  L.push(`VERDICT: ${verdict}`);
+  L.push(`> ${recommendation}\n`);
+  L.push(`Legend: [PROVEN = ran/works] [UNVERIFIED = read/claimed, not validated] [EXTERNAL = untrusted]\n`);
+
+  L.push(`PROVEN WORKING (${provenOnly.length})`);
+  if (provenOnly.length) for (const p of provenOnly) L.push(`   ${p.name}  — ${p.basis}   [re-prove: ${p.prove}]`);
+  else L.push(`   (none — nothing in your network is proven-working for this yet)`);
+
+  const fmtRow = (src, r) => {
+    if (src.type === 'command') return `${r.title ?? r.id ?? '(item)'}${r.score != null ? ` (${r.score})` : ''}${r.url ? `  ${r.url}` : ''}${r.id != null ? `  ·${r.id}` : ''}`;
+    return `${(r.file || '').split('/').pop()}${r.line ? `:${r.line}` : ''}  ${r.text || ''}`;
+  };
+  for (const { src, rows } of unverified) {
+    L.push(`\nUNVERIFIED · ${src.name} [${src.kind || (src.type === 'command' ? 'claim' : 'note')}]${src.why ? ` — ${src.why}` : ''} (${rows.length})`);
+    if (!rows.length) { L.push(`   (none)`); continue; }
+    for (const r of rows) L.push(`   ${fmtRow(src, r)}`);
+  }
+  const present = proven.filter(p => p.trust !== 'proven');
+  if (present.length) {
+    L.push(`\nUNVERIFIED · installed tools that did NOT run cleanly (${present.length})`);
+    for (const r of present) L.push(`   ${r.name}  — ${r.basis}`);
+  }
+
+  L.push(`\nEXTERNAL (escalate only after the above, UNTRUSTED until validated):`);
+  for (const e of (CFG.external || [])) L.push(`   ${e.name}  — ${e.why}`);
+  console.log(L.join('\n'));
+};
+
+commands.sources = async (args, { human }) => {
+  const data = { proven: CFG.proven, sources: CFG.sources, external: CFG.external, config: CFG_PATH };
+  if (!human) { fdn.out(data); return; }
+  console.log(`\nfoundations sweeps THESE first (your own network), in trust order:\n`);
+  console.log(`config: ${CFG_PATH}\n`);
+  if (CFG.proven && CFG.proven.bin)
+    console.log(`PROVEN      installed CLIs in ${CFG.proven.bin} — ${CFG.proven.why || 'liveness-checked'}`);
+  for (const s of (CFG.sources || []))
+    console.log(`UNVERIFIED  ${String(s.name).padEnd(10)} [${s.kind || s.type}] — ${s.why || ''}`);
+  console.log(`\nEXTERNAL (only after local sweep, untrusted until validated):`);
+  for (const e of (CFG.external || [])) console.log(`   ${e.name} — ${e.why}`);
+};
+
+commands.help = () => {
+  console.error(`foundations — investigate your own network before deep-diving an idea
+
+Usage: foundations <command> [args] [--human]
+
+  check "<idea>" [-k N] [--source <names>]
+                     sweep your network; show PROVEN vs UNVERIFIED vs EXTERNAL
+  "<idea>"           shorthand for: check "<idea>"
+  sources            list what gets swept and each source's trust class
+  help               this message
+
+  -H, --human        readable report (default is JSON)
+  --source a,b       restrict the sweep to named sources (e.g. proven,notes)
+
+Config: foundations.config.json (or \$FOUNDATIONS_CONFIG). The bundled config
+points at ./demo so this runs out of the box. Copy foundations.config.example.json
+and point it at your real tools and folders.
+
+Trust tiers, always explicit:
+  proven      installed CLI that actually ran (build on it)
+  unverified  found in your network, NOT validated (leads: command/files)
+  external    web / MCP — untrusted until validated; escalate only after local sweep`);
+};
+
+// shorthand: `foundations "<idea>"` -> check, when arg0 isn't a known command
+const raw = process.argv.slice(2);
+const known = new Set(['check', 'sources', 'help', '--help', '-h']);
+const first = fdn.extractHuman(raw).rest[0];
+if (first && !known.has(first)) process.argv.splice(2, 0, 'check');
+
+fdn.run({ commands, help: commands.help }, process.argv.slice(2));

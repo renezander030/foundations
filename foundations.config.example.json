@@ -1,0 +1,60 @@
+{
+  "_comment": "Real-wiring example. Point `proven.bin` at your CLI install dir, add a `command` source per tool that can emit a JSON array, and `files` sources for your notes/repos. Save as foundations.config.json or export FOUNDATIONS_CONFIG=/path/to/this.json. Absolute paths recommended for a real setup.",
+
+  "proven": {
+    "bin": "/usr/local/bin",
+    "trust": "proven",
+    "kind": "tool",
+    "why": "installed CLI, liveness-checked (runs, exit 0)",
+    "liveness": ["help", "--help", "version"]
+  },
+
+  "sources": [
+    {
+      "name": "tasks",
+      "type": "command",
+      "kind": "claim",
+      "why": "tasks are intentions you noted, not validated working",
+      "search": {
+        "cmd": "your-task-cli",
+        "args": ["search", "{query}", "--json"],
+        "timeout": 8000
+      },
+      "map": { "id": "id", "title": "title", "score": "score" }
+    },
+    {
+      "name": "content",
+      "type": "command",
+      "kind": "published",
+      "why": "live content; assertions not independently validated",
+      "search": {
+        "cmd": "your-content-search",
+        "args": ["semantic", "{query}", "-k", "{k}"]
+      },
+      "map": { "title": "title", "url": "url", "score": "score" }
+    },
+    {
+      "name": "notes",
+      "type": "files",
+      "kind": "note",
+      "why": "prior knowledge, may be stale; verify before relying",
+      "roots": ["/path/to/your/notes"],
+      "exts": [".md", ".txt"]
+    },
+    {
+      "name": "repos",
+      "type": "files",
+      "kind": "code",
+      "why": "source is present, not confirmed to run/work",
+      "roots": ["/path/to/your/code", "/path/to/more/code"],
+      "exts": [".js", ".ts", ".py", ".sh", ".go", ".md", ".json"]
+    }
+  ],
+
+  "external": [
+    { "name": "WebSearch / WebFetch", "trust": "untrusted", "why": "external; validate before trusting" },
+    { "name": "MCP tools / package registries", "trust": "untrusted", "why": "external; validate before trusting" }
+  ],
+
+  "stopwords": ["the", "and", "for", "with", "that", "this", "from", "into", "your", "our", "are", "was", "how", "can", "does", "what", "when", "where", "why", "who", "build", "make", "use", "using", "need", "want", "idea", "new"]
+}

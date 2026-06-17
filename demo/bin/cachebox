@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+# cachebox — demo CLI: a tiny TTL cache for HTTP responses.
+# (A stand-in so the PROVEN tier has something real to liveness-check.)
+case "$1" in
+  help|--help|"")
+    echo "cachebox — tiny TTL caching layer for HTTP responses"
+    echo "Usage: cachebox get <key> | cachebox put <key> <value> --ttl <seconds>"
+    exit 0 ;;
+  *)
+    echo "cachebox: (demo) command: $*"
+    exit 0 ;;
+esac
