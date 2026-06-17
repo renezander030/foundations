@@ -8,7 +8,7 @@
   },
   "scripts": {
     "demo": "node bin/foundations check \"vector search caching\" --human",
-    "test": "node bin/foundations check \"vector search caching deploy\" --human"
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
