@@ -1,0 +1,9 @@
+{
+  "_comment": "Paste into the `sources` array. Bounded pure-Node text search over agent/personal memory notes. Replace the roots with YOUR memory dir(s) — absolute paths recommended. Common locations: ~/.codex/memory, ~/.claude/memory.",
+  "name": "memory",
+  "type": "files",
+  "kind": "note",
+  "why": "agent/personal memory notes; may be stale, verify before relying",
+  "roots": ["/home/youruser/.codex/memory", "/home/youruser/.claude/memory"],
+  "exts": [".md", ".txt"]
+}

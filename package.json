@@ -1,6 +1,6 @@
 {
   "name": "foundations-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Check your own network before you google. A trust-ordered sweep of your proven tools, notes and code, so your AI agent (and you) build on practice, not loose ends.",
   "type": "module",
   "bin": {
@@ -8,10 +8,23 @@
   },
   "scripts": {
     "demo": "node bin/foundations check \"vector search caching\" --human",
-    "test": "node --test"
+    "test": "node --test",
+    "smoke": "node bin/foundations check \"vector search caching deploy\" --human"
   },
   "engines": {
     "node": ">=18"
+  },
+  "author": "Rene Zander",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renezander030/foundations.git"
+  },
+  "bugs": {
+    "url": "https://github.com/renezander030/foundations/issues"
+  },
+  "homepage": "https://github.com/renezander030/foundations#readme",
+  "publishConfig": {
+    "access": "public"
   },
   "keywords": [
     "ai-agent",
@@ -28,8 +41,10 @@
     "bin",
     "lib",
     "demo",
+    "presets",
     "foundations.config.json",
     "foundations.config.example.json",
+    "AGENTS.md",
     "README.md",
     "LICENSE"
   ]

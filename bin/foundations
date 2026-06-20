@@ -26,13 +26,17 @@
 
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { spawnSync } from 'child_process';
 import * as fdn from '../lib/foundation.js';
 
 const DIR = fdn.dirOf(import.meta.url);
-// config: explicit --config, else FOUNDATIONS_CONFIG, else repo-root default.
+// config resolution order: $FOUNDATIONS_CONFIG > the XDG config (if `init` wrote
+// one) > the bundled demo config (so it still runs out of the box). xdgConfigPath
+// is a hoisted function declaration, safe to call here.
 const CFG_PATH = process.env.FOUNDATIONS_CONFIG
-  || path.resolve(DIR, '..', 'foundations.config.json');
+  || (fs.existsSync(xdgConfigPath()) ? xdgConfigPath()
+  : path.resolve(DIR, '..', 'foundations.config.json'));
 const CFG_DIR = path.dirname(CFG_PATH);
 const CFG = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
 
@@ -48,11 +52,130 @@ function terms(q) {
 function sh(cmd, args, timeout = 15000) {
   try {
     const r = spawnSync(cmd, args, { encoding: 'utf8', timeout, maxBuffer: 1 << 24 });
-    return { ok: r.status === 0, out: r.stdout || '', err: r.stderr || '', status: r.status };
-  } catch (e) { return { ok: false, out: '', err: e.message, status: -1 }; }
+    const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT') || r.signal === 'SIGTERM';
+    const notFound = !!(r.error && r.error.code === 'ENOENT');
+    return { ok: r.status === 0, out: r.stdout || '', err: r.stderr || '', status: r.status, timedOut, notFound };
+  } catch (e) { return { ok: false, out: '', err: e.message, status: -1, timedOut: false, notFound: false }; }
 }
 function tryJSON(s) { try { return JSON.parse(s); } catch { return null; } }
 function get(obj, key) { return key ? key.split('.').reduce((o, k) => (o == null ? o : o[k]), obj) : undefined; }
+function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
+// Pure-Node PATH lookup (no shell builtin like `command -v`, which can't be
+// spawned directly). Returns the resolved executable path, or null.
+function onPath(cmd) {
+  if (/[\/\\]/.test(cmd)) { try { fs.accessSync(cmd, fs.constants.X_OK); return cmd; } catch { return null; } }
+  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const exts = process.platform === 'win32' ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';') : [''];
+  const mode = process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK;
+  for (const d of dirs) {
+    for (const ext of exts) {
+      const full = path.join(d, cmd + ext);
+      try { fs.accessSync(full, mode); return full; } catch {}
+    }
+  }
+  return null;
+}
+
+// XDG-conventional default config path: $XDG_CONFIG_HOME/foundations/config.json,
+// falling back to ~/.config/foundations/config.json.
+function homeDir() { return process.env.HOME || process.env.USERPROFILE || os.homedir(); }
+function xdgConfigPath() {
+  const base = process.env.XDG_CONFIG_HOME || path.join(homeDir(), '.config');
+  return path.join(base, 'foundations', 'config.json');
+}
+// Detect a real install dir for proven CLIs, in preference order. First existing wins.
+function detectBinDir() {
+  const cands = [
+    '/usr/local/bin', '/opt/homebrew/bin',
+    path.join(homeDir(), '.local', 'bin'),
+    path.join(homeDir(), 'bin'),
+    '/usr/bin',
+  ];
+  return cands.find(isDir) || '/usr/local/bin';
+}
+
+// ---- PRESETS (item 6): documented, portable real-wiring source blocks. -------
+// Generic by design — paths are DETECTED at init time, never hard-coded. Each
+// preset says how to detect itself so `foundations init` only writes sources
+// whose backing tool/dir actually exists (no broken roots, no dead commands).
+const PRESETS = {
+  // Command sources: a CLI that emits a JSON array. Detected via PATH.
+  ats: {
+    detect: () => onPath('ats'),
+    source: {
+      name: 'tasks', type: 'command', kind: 'claim',
+      why: 'tasks are intentions you noted, not validated working',
+      search: { cmd: 'ats', args: ['find', '{query}', '--json'], timeout: 8000 },
+      map: { id: 'id', title: 'title', score: 'score' },
+    },
+  },
+  rzq: {
+    detect: () => onPath('rzq'),
+    source: {
+      name: 'content', type: 'command', kind: 'published',
+      why: 'live content; published assertions, not independently validated',
+      search: { cmd: 'rzq', args: ['semantic', '{query}', '-k', '{k}'], timeout: 8000 },
+      map: { title: 'title', url: 'url', score: 'score' },
+    },
+  },
+  // Files sources: a local directory. Detected by trying a list of common roots.
+  memory: {
+    detect: () => [
+      path.join(homeDir(), '.codex', 'memory'),
+      path.join(homeDir(), '.claude', 'memory'),
+      path.join(homeDir(), '.config', 'foundations', 'memory'),
+    ].find(isDir),
+    source: dir => ({
+      name: 'memory', type: 'files', kind: 'note',
+      why: 'agent/personal memory notes; may be stale, verify before relying',
+      roots: [dir], exts: ['.md', '.txt'],
+    }),
+  },
+  repos: {
+    detect: () => [
+      path.join(homeDir(), 'repos'), path.join(homeDir(), 'code'),
+      path.join(homeDir(), 'src'), path.join(homeDir(), 'projects'),
+    ].find(isDir),
+    source: dir => ({
+      name: 'repos', type: 'files', kind: 'code',
+      why: 'source is present, not confirmed to run/work',
+      roots: [dir],
+      exts: ['.js', '.ts', '.tsx', '.jsx', '.py', '.sh', '.go', '.md', '.json', '.yaml', '.yml'],
+    }),
+  },
+};
+
+// Build a real-world config by detecting what's actually installed/present.
+function buildDetectedConfig() {
+  const binDir = detectBinDir();
+  const sources = [];
+  const detected = [];
+  const skipped = [];
+  for (const [key, p] of Object.entries(PRESETS)) {
+    const hit = p.detect();
+    if (hit) {
+      sources.push(typeof p.source === 'function' ? p.source(hit) : p.source);
+      detected.push(`${key} (${hit})`);
+    } else {
+      skipped.push(key);
+    }
+  }
+  const cfg = {
+    _comment: 'Generated by `foundations init`. Paths are absolute and were detected on this machine. Edit freely; re-run with --force to regenerate. See foundations.config.example.json and presets/ for more source blocks.',
+    proven: {
+      bin: binDir, trust: 'proven', kind: 'tool',
+      why: 'installed CLI, liveness-checked (runs, exit 0)',
+      liveness: ['help', '--help', 'version'],
+    },
+    sources,
+    external: [
+      { name: 'WebSearch / WebFetch', trust: 'untrusted', why: 'external; validate before trusting' },
+      { name: 'MCP tools / package registries', trust: 'untrusted', why: 'external; validate before trusting' },
+    ],
+    stopwords: ['the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'your', 'our', 'are', 'was', 'how', 'can', 'does', 'what', 'when', 'where', 'why', 'who', 'build', 'make', 'use', 'using', 'need', 'want', 'idea', 'new'],
+  };
+  return { cfg, binDir, detected, skipped };
+}
 
 // ---- UNVERIFIED · command source -------------------------------------------
 // Runs a configured command that prints a JSON array, then maps fields via
@@ -60,25 +183,53 @@ function get(obj, key) { return key ? key.split('.').reduce((o, k) => (o == null
 // real tool (a task CLI, a content search, an issue tracker) without code.
 function sweepCommand(src, q, k) {
   const spec = src.search || {};
-  if (!spec.cmd) return [];
+  const timeout = spec.timeout || 10000;
+  const diag = { name: src.name, type: 'command', status: 'ok', rows: 0, warnings: [], errors: [] };
+  if (!spec.cmd) { diag.status = 'error'; diag.errors.push('no search.cmd configured'); return { rows: [], diag }; }
   const args = (spec.args || []).map(a => a.replace(/\{query\}/g, q).replace(/\{k\}/g, String(k)));
   const cmd = /[\/\\]/.test(spec.cmd) ? resolvePath(spec.cmd) : spec.cmd; // path -> resolve, bare name -> PATH
-  const r = sh(cmd, args, spec.timeout || 10000);
-  const arr = tryJSON(r.out) || [];
+  diag.resolved = /[\/\\]/.test(spec.cmd) ? cmd : (onPath(cmd) || `${cmd} (not on PATH)`);
+  const r = sh(cmd, args, timeout);
+  diag.exit_status = r.status;
+  if (r.timedOut) diag.timed_out = true;
+  const parsed = tryJSON(r.out);
+  const isArray = Array.isArray(parsed);
+  diag.stdout_json = parsed !== null;
+  diag.stdout_array = isArray;
+  const arr = isArray ? parsed : [];
+  diag.rows_raw = arr.length;
   const m = src.map || {};
   const out = [];
   const seen = new Set();
   for (const t of arr.slice(0, k)) {
     const id = m.id ? get(t, m.id) : undefined;
     if (id != null) { if (seen.has(id)) continue; seen.add(id); }
+    const sc = m.score ? get(t, m.score) : undefined;
     out.push({
       trust: 'unverified', kind: src.kind || 'claim', source: src.name,
       id, title: m.title ? get(t, m.title) : undefined,
       url: m.url ? get(t, m.url) : undefined,
-      score: m.score ? get(t, m.score) : undefined,
+      score: sc,
+      score_explanation: sc != null
+        ? `relevance score ${sc} reported by '${src.name}' (the tool ranked it; not independently verified)`
+        : `returned by '${src.name}' in rank order (tool gave no score)`,
     });
   }
-  return out.slice(0, k);
+  const rows = out.slice(0, k);
+  diag.rows = rows.length;
+  // diagnostics verdict
+  if (r.notFound) diag.errors.push(`command not found: ${spec.cmd}`);
+  else if (r.timedOut) diag.errors.push(`command timed out after ${timeout}ms`);
+  else if (!r.ok) diag.errors.push(`command exited ${r.status}${r.err ? `: ${r.err.split('\n')[0].slice(0, 120)}` : ''}`);
+  else if (parsed === null) diag.errors.push('stdout is not valid JSON');
+  else if (!isArray) diag.warnings.push('stdout JSON is not an array');
+  // mapped fields missing from returned rows (only meaningful when rows exist)
+  if (arr.length) {
+    const missingFields = Object.entries(m).filter(([, key]) => key && get(arr[0], key) == null).map(([f]) => f);
+    if (missingFields.length) diag.warnings.push(`mapped field(s) missing from rows: ${missingFields.join(', ')}`);
+  }
+  diag.status = diag.errors.length ? 'error' : diag.warnings.length ? 'warning' : 'ok';
+  return { rows, diag };
 }
 
 // ---- UNVERIFIED · files source ---------------------------------------------
@@ -86,14 +237,15 @@ function sweepCommand(src, q, k) {
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'public',
   'vendor', '__pycache__', '.cache', '.venv', 'target', 'coverage']);
 function walkSearch(q, k, roots, kind, source, opts = {}) {
-  const ts = terms(q); if (!ts.length) return [];
+  const ts = terms(q);
   const exts = opts.exts || null;          // Set of '.ext' or null = any
   const maxSize = opts.maxSize || 262144;
   const maxScan = opts.maxScan || 6000;
-  const hits = []; let scanned = 0;
+  const hits = []; let scanned = 0, skippedSize = 0, limitReached = false;
+  if (!ts.length) return { hits, scanned, skippedSize, limitReached };
   const stack = [...roots];
   while (stack.length) {
-    if (scanned > maxScan) break;
+    if (scanned > maxScan) { limitReached = true; break; }
     const cur = stack.pop();
     let st; try { st = fs.statSync(cur); } catch { continue; }
     if (st.isDirectory()) {
@@ -102,17 +254,22 @@ function walkSearch(q, k, roots, kind, source, opts = {}) {
       for (const e of entries) stack.push(`${cur}/${e}`);
       continue;
     }
-    if (!st.isFile() || st.size > maxSize) continue;
+    if (!st.isFile()) continue;
+    if (st.size > maxSize) { skippedSize++; continue; }
     if (exts) { const dot = cur.lastIndexOf('.'); if (!exts.has(dot >= 0 ? cur.slice(dot).toLowerCase() : '')) continue; }
     scanned++;
     let content; try { content = fs.readFileSync(cur, 'utf8'); } catch { continue; }
     const low = content.toLowerCase();
     const matched = ts.filter(t => low.includes(t));
     if (!matched.length) continue;
-    // rank: distinct terms in content + filename matches weigh double (intent signal)
+    // rank (explainable): distinct content terms + filename matches weigh double
+    // (filename is a strong intent signal) + a small recency boost so a note you
+    // touched last week outranks an equally-matching one from two years ago.
     const base = cur.split('/').pop().toLowerCase();
-    const fnameHits = ts.filter(t => base.includes(t)).length;
-    const score = matched.length + fnameHits * 2;
+    const filenameMatches = ts.filter(t => base.includes(t));
+    const recencyDays = Math.max(0, Math.round((Date.now() - st.mtimeMs) / 86400000));
+    const recencyBoost = recencyDays <= 30 ? 1 : recencyDays <= 90 ? 0.5 : recencyDays <= 365 ? 0.25 : 0;
+    const score = matched.length + filenameMatches.length * 2 + recencyBoost;
     // best line = the line covering the most distinct query terms
     const lines = content.split('\n');
     let best = { i: 0, n: 0 };
@@ -122,38 +279,76 @@ function walkSearch(q, k, roots, kind, source, opts = {}) {
       if (n > best.n) best = { i, n };
       if (n === ts.length) break;
     }
+    const parts = [`${matched.length} content term${matched.length === 1 ? '' : 's'} (${matched.join(', ')})`];
+    if (filenameMatches.length) parts.push(`${filenameMatches.length} filename match${filenameMatches.length === 1 ? '' : 'es'}×2 (${filenameMatches.join(', ')})`);
+    if (recencyBoost) parts.push(`recent +${recencyBoost} (${recencyDays}d old)`);
     hits.push({ trust: 'unverified', kind, source, file: cur, line: best.i + 1,
-      text: lines[best.i].trim().slice(0, 160), score, terms: matched.length });
+      text: lines[best.i].trim().slice(0, 160),
+      score: Math.round(score * 100) / 100, terms: matched.length,
+      matched_terms: matched, filename_matches: filenameMatches,
+      recency_days: recencyDays, score_explanation: parts.join(' + ') });
   }
   hits.sort((a, b) => b.score - a.score);
-  return hits.slice(0, k);
+  return { hits: hits.slice(0, k), scanned, skippedSize, limitReached };
 }
 function sweepFiles(src, q, k) {
-  const roots = (src.roots || []).map(resolvePath);
+  const diag = { name: src.name, type: 'files', status: 'ok', rows: 0, warnings: [], errors: [] };
+  const rootsRaw = (src.roots || []).map(resolvePath);
+  const roots = [], missing = [], unreadable = [];
+  for (const r of rootsRaw) {
+    let st; try { st = fs.statSync(r); } catch { missing.push(r); continue; }
+    if (!st.isDirectory()) { missing.push(r); continue; }
+    try { fs.readdirSync(r); roots.push(r); } catch { unreadable.push(r); }
+  }
   const exts = src.exts ? new Set(src.exts.map(e => e.toLowerCase())) : null;
-  return walkSearch(q, k, roots, src.kind || 'note', src.name, { exts });
+  const { hits, scanned, skippedSize, limitReached } = walkSearch(q, k, roots, src.kind || 'note', src.name, { exts });
+  diag.resolved_roots = roots;
+  diag.missing_roots = missing;
+  diag.unreadable_roots = unreadable;
+  diag.files_scanned = scanned;
+  diag.files_skipped_size = skippedSize;
+  diag.scan_limit_reached = limitReached;
+  diag.exts = src.exts || null;
+  diag.rows = hits.length;
+  for (const m of missing) diag.warnings.push(`root does not exist: ${m}`);
+  for (const u of unreadable) diag.errors.push(`root unreadable: ${u}`);
+  if (limitReached) diag.warnings.push(`scan limit reached (${scanned} files); results may be partial`);
+  if (!roots.length && rootsRaw.length) diag.status = 'error';
+  else diag.status = diag.errors.length ? 'error' : diag.warnings.length ? 'warning' : 'ok';
+  return { rows: hits, diag };
 }
 
 // ---- PROVEN tier: installed CLIs relevant to the idea, liveness-checked -----
 function sweepProven(q, k) {
-  const ts = terms(q); if (!ts.length) return [];
+  const ts = terms(q);
   const cfg = CFG.proven || {};
   const binDir = cfg.bin ? resolvePath(cfg.bin) : null;
-  if (!binDir) return [];
-  let names = [];
-  try { names = fs.readdirSync(binDir); } catch { return []; }
   const liveness = cfg.liveness && cfg.liveness.length ? cfg.liveness : ['help', '--help'];
+  const diag = { name: 'proven', type: 'proven', status: 'ok', resolved_bin: binDir,
+    liveness_verbs: liveness, candidates_inspected: 0, candidates_matched: 0,
+    tools_present_not_clean: 0, rows: 0, warnings: [], errors: [] };
+  if (!binDir) { diag.status = 'error'; diag.errors.push('proven.bin not configured'); return { all: [], diag }; }
+  let names = [];
+  try { names = fs.readdirSync(binDir); }
+  catch { diag.status = 'error'; diag.errors.push(`bin dir not readable: ${binDir}`); return { all: [], diag }; }
+  diag.candidates_inspected = names.length;
+  if (!ts.length) return { all: [], diag };
   const cand = [];
   for (const name of names) {
     const link = `${binDir}/${name}`;
     let target = link, header = '';
     try { target = fs.realpathSync(link); } catch {}
     try { header = fs.readFileSync(target, 'utf8').slice(0, 1200).toLowerCase(); } catch {}
-    const hay = `${name} ${target} ${header}`.toLowerCase();
-    const score = ts.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
-    if (score > 0) cand.push({ name, link, target, score });
+    const nameLow = name.toLowerCase(), targetLow = target.toLowerCase();
+    const matchedName = ts.filter(t => nameLow.includes(t));
+    const matchedTarget = ts.filter(t => !matchedName.includes(t) && targetLow.includes(t));
+    const matchedHeader = ts.filter(t => !matchedName.includes(t) && !matchedTarget.includes(t) && header.includes(t));
+    const matched = [...matchedName, ...matchedTarget, ...matchedHeader];
+    const score = matched.length;
+    if (score > 0) cand.push({ name, link, target, score, matchedName, matchedTarget, matchedHeader, matched });
   }
   cand.sort((a, b) => b.score - a.score);
+  diag.candidates_matched = cand.length;
   const proven = [];
   for (const c of cand.slice(0, k)) {
     // liveness: actually run it (by full path, so it need not be on PATH).
@@ -165,6 +360,10 @@ function sweepProven(q, k) {
       if (r.ok) { live = r; used = verb; break; }
       live = r;
     }
+    const where = [];
+    if (c.matchedName.length) where.push(`name (${c.matchedName.join(', ')})`);
+    if (c.matchedTarget.length) where.push(`path (${c.matchedTarget.join(', ')})`);
+    if (c.matchedHeader.length) where.push(`script header (${c.matchedHeader.join(', ')})`);
     proven.push({
       trust: live.ok ? 'proven' : 'unverified',
       kind: live.ok ? 'tool' : 'tool-present',
@@ -173,9 +372,17 @@ function sweepProven(q, k) {
       basis: live.ok ? `ran '${c.name} ${used}' (exit 0)`
         : `present but did not run cleanly (status ${live.status})`,
       prove: `${c.name} ${used}`,
+      score: c.score,
+      matched_terms: c.matched,
+      score_explanation: `matched ${c.matched.length} term${c.matched.length === 1 ? '' : 's'} in ${where.join(' + ')}`
+        + (live.ok ? `; promoted to PROVEN because it ran cleanly` : `; stayed UNVERIFIED (did not run cleanly)`),
     });
   }
-  return proven;
+  const provenOk = proven.filter(p => p.trust === 'proven').length;
+  diag.tools_present_not_clean = proven.length - provenOk;
+  diag.rows = provenOk;
+  if (diag.tools_present_not_clean && !provenOk) diag.status = 'warning';
+  return { all: proven, diag };
 }
 
 const commands = {};
@@ -188,16 +395,26 @@ commands.check = async (args, { human }) => {
   const only = flags.source ? new Set(String(flags.source).split(',')) : null;
   const want = name => !only || only.has(name);
 
-  const proven = want('proven') ? sweepProven(q, k) : [];
+  const diagnostics = { config: CFG_PATH, sources: [] };
+  const skipDiag = (name, type) => ({ name, type, status: 'skipped', rows: 0, warnings: [], errors: [] });
+
+  let proven = [];
+  if (want('proven')) {
+    const ps = sweepProven(q, k);
+    proven = ps.all;
+    diagnostics.sources.push(ps.diag);
+  } else diagnostics.sources.push(skipDiag('proven', 'proven'));
   const provenOnly = proven.filter(p => p.trust === 'proven');
 
   // unverified sources, in declared config order
   const unverified = [];
   for (const src of (CFG.sources || [])) {
-    if (!want(src.name)) continue;
-    const rows = src.type === 'command' ? sweepCommand(src, q, k)
-      : src.type === 'files' ? sweepFiles(src, q, k) : [];
-    unverified.push({ src, rows });
+    if (!want(src.name)) { diagnostics.sources.push(skipDiag(src.name, src.type)); continue; }
+    const swept = src.type === 'command' ? sweepCommand(src, q, k)
+      : src.type === 'files' ? sweepFiles(src, q, k)
+      : { rows: [], diag: { name: src.name, type: src.type || 'unknown', status: 'error', rows: 0, warnings: [], errors: [`unknown source type: ${src.type}`] } };
+    unverified.push({ src, rows: swept.rows });
+    diagnostics.sources.push(swept.diag);
   }
 
   const unverifiedCount = unverified.reduce((n, s) => n + s.rows.length, 0)
@@ -219,6 +436,7 @@ commands.check = async (args, { human }) => {
     unverified: Object.fromEntries(unverified.map(s => [s.src.name, s.rows])),
     tools_present: proven.filter(p => p.trust !== 'proven'),
     external_next: CFG.external || [],
+    diagnostics,
   };
 
   if (!human) { fdn.out(result); return; }
@@ -230,7 +448,10 @@ commands.check = async (args, { human }) => {
   L.push(`Legend: [PROVEN = ran/works] [UNVERIFIED = read/claimed, not validated] [EXTERNAL = untrusted]\n`);
 
   L.push(`PROVEN WORKING (${provenOnly.length})`);
-  if (provenOnly.length) for (const p of provenOnly) L.push(`   ${p.name}  — ${p.basis}   [re-prove: ${p.prove}]`);
+  if (provenOnly.length) for (const p of provenOnly) {
+    L.push(`   ${p.name}  — ${p.basis}   [re-prove: ${p.prove}]`);
+    if (p.score_explanation) L.push(`      why ranked: ${p.score_explanation}`);
+  }
   else L.push(`   (none — nothing in your network is proven-working for this yet)`);
 
   const fmtRow = (src, r) => {
@@ -240,7 +461,10 @@ commands.check = async (args, { human }) => {
   for (const { src, rows } of unverified) {
     L.push(`\nUNVERIFIED · ${src.name} [${src.kind || (src.type === 'command' ? 'claim' : 'note')}]${src.why ? ` — ${src.why}` : ''} (${rows.length})`);
     if (!rows.length) { L.push(`   (none)`); continue; }
-    for (const r of rows) L.push(`   ${fmtRow(src, r)}`);
+    for (const r of rows) {
+      L.push(`   ${fmtRow(src, r)}${r.score != null ? `  [score ${r.score}]` : ''}`);
+      if (r.score_explanation) L.push(`      why ranked: ${r.score_explanation}`);
+    }
   }
   const present = proven.filter(p => p.trust !== 'proven');
   if (present.length) {
@@ -248,9 +472,268 @@ commands.check = async (args, { human }) => {
     for (const r of present) L.push(`   ${r.name}  — ${r.basis}`);
   }
 
+  const dirty = diagnostics.sources.filter(d => d.status === 'error' || d.status === 'warning');
+  if (dirty.length) {
+    L.push(`\nDiagnostics (run \`foundations doctor\` for detail):`);
+    for (const d of dirty) {
+      const msgs = [...(d.errors || []), ...(d.warnings || [])];
+      L.push(`   ${d.status === 'error' ? 'ERROR' : 'WARN'} ${d.name}: ${msgs.join('; ')}`);
+    }
+  } else {
+    L.push(`\nDiagnostics: all configured sources responded cleanly`);
+  }
+
   L.push(`\nEXTERNAL (escalate only after the above, UNTRUSTED until validated):`);
   for (const e of (CFG.external || [])) L.push(`   ${e.name}  — ${e.why}`);
   console.log(L.join('\n'));
+};
+
+// ---- init (item 5): generate a usable real-world config -------------------
+// Detects your install dir and which preset tools/dirs actually exist, then
+// writes an absolute-path config to the XDG default (or --config <path>).
+commands.init = async (args, { human }) => {
+  const { flags } = fdn.parseArgs(args, ['config']);
+  const target = flags.config ? path.resolve(String(flags.config)) : xdgConfigPath();
+  const { cfg, binDir, detected, skipped } = buildDetectedConfig();
+  const json = JSON.stringify(cfg, null, 2);
+
+  if (flags.print) {
+    // --print: emit config to stdout, write nothing.
+    console.log(json);
+    return;
+  }
+
+  if (fs.existsSync(target) && !flags.force) {
+    const msg = `config already exists: ${target}\nRe-run with --force to overwrite, or --print to preview, or --config <path> for a different location.`;
+    if (!human) { fdn.out({ ok: false, error: 'exists', config: target }); }
+    else console.error(msg);
+    process.exit(1);
+  }
+
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, json + '\n');
+
+  const summary = {
+    ok: true, config: target, proven_bin: binDir,
+    detected_sources: detected, skipped_presets: skipped,
+    next: `export FOUNDATIONS_CONFIG=${target}   # then: foundations check "<idea>"`,
+  };
+  if (!human) { fdn.out(summary); return; }
+  const L = [`\nwrote config: ${target}`,
+    `proven bin:   ${binDir}`,
+    detected.length ? `detected:     ${detected.join(', ')}` : `detected:     (no preset tools/dirs found — add sources by hand)`,
+  ];
+  if (skipped.length) L.push(`not present:  ${skipped.join(', ')} (no source written — nothing broken)`);
+  L.push(`\nPoint foundations at it:\n   export FOUNDATIONS_CONFIG=${target}`,
+    `Then:\n   foundations check "<your idea>" --human`,
+    `\nMore source blocks to copy: foundations.config.example.json and presets/.`);
+  console.log(L.join('\n'));
+};
+
+// ---- prove (item 8): turn an UNVERIFIED hit into a concrete proof ----------
+// Strict: only an actual clean EXECUTION (a tool liveness run, or a source's
+// configured `validate` command exiting 0) yields trust=proven. Inspecting a
+// file or a claim with no validation stays unverified — reading is not running.
+function findFileUnder(roots, item) {
+  const want = item.toLowerCase();
+  const stack = roots.map(resolvePath);
+  let scanned = 0;
+  while (stack.length && scanned < 8000) {
+    const cur = stack.pop();
+    let st; try { st = fs.statSync(cur); } catch { continue; }
+    if (st.isDirectory()) {
+      if (SKIP_DIRS.has(cur.split('/').pop())) continue;
+      let entries; try { entries = fs.readdirSync(cur); } catch { continue; }
+      for (const e of entries) stack.push(`${cur}/${e}`);
+      continue;
+    }
+    scanned++;
+    if (cur.toLowerCase().endsWith(want) || cur.split('/').pop().toLowerCase() === want) return cur;
+  }
+  return null;
+}
+function runValidate(spec, repl) {
+  const args = (spec.args || []).map(a =>
+    Object.entries(repl).reduce((s, [k, v]) => s.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v)), a));
+  const cmd = /[\/\\]/.test(spec.cmd) ? resolvePath(spec.cmd) : spec.cmd;
+  return { run: sh(cmd, args, spec.timeout || 15000), shown: `${spec.cmd} ${args.join(' ')}` };
+}
+commands.prove = async (args, { human }) => {
+  const { positional } = fdn.parseArgs(args, []);
+  const spec = positional.join(' ').trim();
+  if (!spec.includes(':')) {
+    console.error('Usage: foundations prove <source>:<item>\n  e.g. foundations prove proven:vecto\n       foundations prove notes:vector-search.md\n       foundations prove tasks:T-101');
+    process.exit(2);
+  }
+  const ci = spec.indexOf(':');
+  const sourceName = spec.slice(0, ci).trim();
+  const item = spec.slice(ci + 1).trim();
+  let result;
+
+  if (['proven', 'installed-cli', 'tool', 'tools'].includes(sourceName)) {
+    const cfg = CFG.proven || {};
+    const binDir = cfg.bin ? resolvePath(cfg.bin) : null;
+    const verbs = (cfg.liveness && cfg.liveness.length) ? cfg.liveness : ['help', '--help'];
+    const cmdPath = (binDir && fs.existsSync(`${binDir}/${item}`)) ? `${binDir}/${item}` : item;
+    let ran = { ok: false, status: -1, out: '', err: '' }, used = verbs[0];
+    for (const v of verbs) { const r = sh(cmdPath, [v], 5000); if (r.ok) { ran = r; used = v; break; } ran = r; }
+    result = {
+      target: `${sourceName}:${item}`, method: 'execute', command: `${item} ${used}`,
+      exit_status: ran.status, trust: ran.ok ? 'proven' : 'unverified',
+      verdict: ran.ok
+        ? `PROVEN — '${item} ${used}' ran cleanly (exit 0). Safe to build on.`
+        : `NOT PROVEN — '${item} ${used}' did not run cleanly (status ${ran.status}). Stays unverified.`,
+      output_head: (ran.out || ran.err || '').split('\n').slice(0, 8).join('\n').slice(0, 600),
+    };
+  } else {
+    const src = (CFG.sources || []).find(s => s.name === sourceName);
+    if (!src) {
+      const names = ['proven', ...(CFG.sources || []).map(s => s.name)].join(', ');
+      console.error(`Unknown source '${sourceName}'. Known: ${names}`);
+      process.exit(1);
+    }
+    const repl = { item, id: item, query: item };
+    if (src.type === 'files') {
+      const file = findFileUnder(src.roots || [], item);
+      if (!file) {
+        result = { target: spec, method: 'inspect', trust: 'unverified',
+          verdict: `NOT FOUND — no file matching '${item}' under ${sourceName} roots. Nothing to inspect.` };
+      } else if (src.validate && src.validate.cmd) {
+        const { run, shown } = runValidate(src.validate, { ...repl, file });
+        result = { target: spec, method: 'validate-command', command: shown, file,
+          exit_status: run.status, trust: run.ok ? 'proven' : 'unverified',
+          verdict: run.ok ? `PROVEN — validation '${shown}' exited 0.`
+            : `NOT PROVEN — validation '${shown}' exited ${run.status}. Stays unverified.`,
+          output_head: (run.out || run.err || '').split('\n').slice(0, 8).join('\n').slice(0, 600) };
+      } else {
+        // No validate command: inspect only. Reading is NOT running — stays unverified.
+        let head = ''; try { head = fs.readFileSync(file, 'utf8').split('\n').slice(0, 12).join('\n').slice(0, 800); } catch {}
+        result = { target: spec, method: 'inspect', file, trust: 'unverified',
+          verdict: `INSPECTED (still unverified) — read != ran. This ${src.kind || 'note'} is a lead, not proof. To promote it, add a "validate" command to this source, or run/test the thing it describes.`,
+          open: file, output_head: head };
+      }
+    } else { // command source
+      if (src.validate && src.validate.cmd) {
+        const { run, shown } = runValidate(src.validate, repl);
+        result = { target: spec, method: 'validate-command', command: shown,
+          exit_status: run.status, trust: run.ok ? 'proven' : 'unverified',
+          verdict: run.ok ? `PROVEN — validation '${shown}' exited 0.`
+            : `NOT PROVEN — validation '${shown}' exited ${run.status}. Stays unverified.`,
+          output_head: (run.out || run.err || '').split('\n').slice(0, 8).join('\n').slice(0, 600) };
+      } else {
+        const s = src.search || {};
+        const reShow = `${s.cmd || '(cmd)'} ${(s.args || []).map(a => a.replace(/\{query\}/g, item).replace(/\{k\}/g, '5')).join(' ')}`.trim();
+        result = { target: spec, method: 'none-configured', trust: 'unverified',
+          verdict: `NO VALIDATION CONFIGURED — this ${src.kind || 'claim'} stays a claim. Add a "validate" command to the '${sourceName}' source to make proof one step. Manual next step: re-run the source (${reShow}) and verify the item yourself.` };
+      }
+    }
+  }
+
+  if (!human) { fdn.out(result); return; }
+  const L = [`\nPROVE ${result.target}`, `> ${result.verdict}`];
+  if (result.command) L.push(`  command: ${result.command}`);
+  if (result.file) L.push(`  file:    ${result.file}`);
+  if (result.exit_status != null) L.push(`  exit:    ${result.exit_status}`);
+  L.push(`  trust:   ${result.trust.toUpperCase()}`);
+  if (result.output_head) L.push(`  ---\n${result.output_head.split('\n').map(x => '  ' + x).join('\n')}`);
+  console.log(L.join('\n'));
+};
+
+// ---- doctor (issue #1): is each configured source actually usable? ---------
+// Distinguishes "no local coverage" from "the local sweep is broken". Reuses the
+// same sweep functions check uses, with a harmless sample query. Never throws on
+// missing commands / roots / bad JSON — it reports them.
+function doctorProven() {
+  const cfg = CFG.proven || {};
+  const binDir = cfg.bin ? resolvePath(cfg.bin) : null;
+  const liveness = cfg.liveness && cfg.liveness.length ? cfg.liveness : ['help', '--help'];
+  const checks = [], warnings = [], errors = [];
+  if (!binDir) { return { name: 'proven', type: 'proven', status: 'error', resolved_bin: null, checks, warnings, errors: ['proven.bin not configured'] }; }
+  checks.push(`bin: ${binDir}`);
+  let names = null;
+  if (!isDir(binDir)) errors.push(`bin dir does not exist: ${binDir}`);
+  else { try { names = fs.readdirSync(binDir); } catch { errors.push(`bin dir not readable: ${binDir}`); } }
+  let candidates = 0, liveTried = 0, livePass = 0;
+  if (names) {
+    candidates = names.length;
+    checks.push(`${candidates} candidate(s)`);
+    for (const name of names.slice(0, 8)) {        // sample, capped to stay fast
+      const link = `${binDir}/${name}`;
+      try { fs.accessSync(link, fs.constants.X_OK); } catch { continue; }
+      liveTried++;
+      for (const v of liveness) { if (sh(link, [v], 5000).ok) { livePass++; break; } }
+    }
+    checks.push(`liveness sampled ${liveTried}, ${livePass} passed`);
+    if (candidates === 0) warnings.push('bin dir has no candidates');
+  }
+  const status = errors.length ? 'error' : warnings.length ? 'warning' : 'ok';
+  return { name: 'proven', type: 'proven', status, resolved_bin: binDir,
+    candidates, liveness_sampled: liveTried, liveness_passed: livePass, checks, warnings, errors };
+}
+function diagChecks(d) {
+  if (d.type === 'command') return [
+    `resolved: ${d.resolved ?? '?'}`, `exit_status: ${d.exit_status ?? '?'}`,
+    `stdout_json: ${!!d.stdout_json}`, `stdout_array: ${!!d.stdout_array}`,
+    `rows: ${d.rows ?? 0}`, ...(d.timed_out ? ['timed_out: true'] : []),
+  ];
+  if (d.type === 'files') return [
+    `roots: ${(d.resolved_roots || []).length} ok / ${(d.missing_roots || []).length} missing / ${(d.unreadable_roots || []).length} unreadable`,
+    `files_scanned: ${d.files_scanned ?? 0}`, `rows: ${d.rows ?? 0}`,
+    `exts: ${(d.exts || ['(any)']).join(' ')}`,
+    ...(d.scan_limit_reached ? ['scan_limit_reached: true'] : []),
+  ];
+  return d.checks || [];
+}
+function diagSummary(d) {
+  const first = (d.errors && d.errors[0]) || (d.warnings && d.warnings[0]);
+  if (first) return first;
+  if (d.type === 'command') return `valid JSON array (${d.rows_raw ?? d.rows ?? 0} rows)`;
+  if (d.type === 'files') return `${d.files_scanned ?? 0} files scanned, ${d.rows ?? 0} matched`;
+  if (d.type === 'proven') return `${d.candidates ?? 0} candidates, liveness ${d.liveness_passed ?? 0}/${d.liveness_sampled ?? 0}`;
+  return 'ok';
+}
+function diagLocation(d) {
+  if (d.type === 'command') return d.resolved || '';
+  if (d.type === 'files') return (d.resolved_roots && d.resolved_roots[0]) || (d.missing_roots && d.missing_roots[0]) || '';
+  if (d.type === 'proven') return d.resolved_bin || '';
+  return '';
+}
+commands.doctor = async (args, { human }) => {
+  const SAMPLE = 'foundations doctor';
+  const provenChk = doctorProven();
+  const sourceDiags = [];
+  for (const src of (CFG.sources || [])) {
+    const swept = src.type === 'command' ? sweepCommand(src, SAMPLE, 5)
+      : src.type === 'files' ? sweepFiles(src, SAMPLE, 5)
+      : { diag: { name: src.name, type: src.type || 'unknown', status: 'error', rows: 0, warnings: [], errors: [`unknown source type: ${src.type}`] } };
+    sourceDiags.push(swept.diag);
+  }
+  const all = [provenChk, ...sourceDiags];
+  const failing = all.filter(d => d.status === 'error');
+  const ok = failing.length === 0;
+
+  const result = {
+    ok, config: CFG_PATH,
+    proven: { ok: provenChk.status !== 'error', status: provenChk.status, checks: diagChecks(provenChk),
+      warnings: provenChk.warnings, errors: provenChk.errors },
+    sources: sourceDiags.map(d => ({ name: d.name, type: d.type, ok: d.status !== 'error',
+      status: d.status, checks: diagChecks(d), warnings: d.warnings || [], errors: d.errors || [] })),
+    errors: all.flatMap(d => (d.errors || []).map(e => `${d.name}: ${e}`)),
+    warnings: all.flatMap(d => (d.warnings || []).map(w => `${d.name}: ${w}`)),
+  };
+
+  if (!human) { fdn.out(result); process.exit(ok ? 0 : 1); }
+
+  const label = s => s === 'error' ? 'FAIL' : s === 'warning' ? 'WARN' : s === 'skipped' ? 'SKIP' : 'OK';
+  const rows = all.map(d => ({ st: label(d.status), name: d.name, loc: diagLocation(d), sum: diagSummary(d) }));
+  const wName = Math.max(4, ...rows.map(r => r.name.length));
+  const wLoc = Math.max(8, ...rows.map(r => r.loc.length));
+  const L = [`\nfoundations doctor`, `config: ${CFG_PATH}\n`];
+  for (const r of rows) L.push(`${r.st.padEnd(7)} ${r.name.padEnd(wName)}  ${r.loc.padEnd(wLoc)}  ${r.sum}`);
+  const nFail = failing.length;
+  L.push(`\nResult: ${ok ? 'OK (all configured sources usable)' : `FAIL (${nFail} failing source${nFail === 1 ? '' : 's'})`}`);
+  console.log(L.join('\n'));
+  process.exit(ok ? 0 : 1);
 };
 
 commands.sources = async (args, { human }) => {
@@ -274,11 +757,19 @@ Usage: foundations <command> [args] [--human]
   check "<idea>" [-k N] [--source <names>]
                      sweep your network; show PROVEN vs UNVERIFIED vs EXTERNAL
   "<idea>"           shorthand for: check "<idea>"
+  init [--print] [--force] [--config <path>]
+                     generate a real-world config (detects your bin dir + tools)
+  prove <source>:<item>
+                     turn an UNVERIFIED hit into a concrete proof (run/inspect)
+  doctor             health-check every configured source (exit 0 = all usable)
   sources            list what gets swept and each source's trust class
   help               this message
 
   -H, --human        readable report (default is JSON)
   --source a,b       restrict the sweep to named sources (e.g. proven,notes)
+
+Default config path: \$XDG_CONFIG_HOME/foundations/config.json
+                     (else ~/.config/foundations/config.json)
 
 Config: foundations.config.json (or \$FOUNDATIONS_CONFIG). The bundled config
 points at ./demo so this runs out of the box. Copy foundations.config.example.json
@@ -292,7 +783,7 @@ Trust tiers, always explicit:
 
 // shorthand: `foundations "<idea>"` -> check, when arg0 isn't a known command
 const raw = process.argv.slice(2);
-const known = new Set(['check', 'sources', 'help', '--help', '-h']);
+const known = new Set(['check', 'sources', 'init', 'prove', 'doctor', 'help', '--help', '-h']);
 const first = fdn.extractHuman(raw).rest[0];
 if (first && !known.has(first)) process.argv.splice(2, 0, 'check');
 

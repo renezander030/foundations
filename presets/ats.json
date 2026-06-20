@@ -1,0 +1,10 @@
+{
+  "_comment": "Paste into the `sources` array. A task/issue CLI that prints a JSON array. Replace `ats` with your tool and adjust `args` to whatever emits JSON. Optional `validate`: a command that, when it exits 0, promotes a hit to PROVEN via `foundations prove tasks:<id>` ({item}/{id}/{query} are substituted).",
+  "name": "tasks",
+  "type": "command",
+  "kind": "claim",
+  "why": "tasks are intentions you noted, not validated working",
+  "search": { "cmd": "ats", "args": ["find", "{query}", "--json"], "timeout": 8000 },
+  "map": { "id": "id", "title": "title", "score": "score" },
+  "validate": { "cmd": "ats", "args": ["tasks", "get", "{id}"], "timeout": 8000 }
+}

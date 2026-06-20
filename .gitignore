@@ -5,3 +5,7 @@ node_modules/
 .env.*
 *.local.json
 .foundations-cache.json
+
+# local agent config (never publish)
+CLAUDE.md
+.claude/

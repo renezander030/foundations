@@ -1,5 +1,5 @@
 {
-  "_comment": "Real-wiring example. Point `proven.bin` at your CLI install dir, add a `command` source per tool that can emit a JSON array, and `files` sources for your notes/repos. Save as foundations.config.json or export FOUNDATIONS_CONFIG=/path/to/this.json. Absolute paths recommended for a real setup.",
+  "_comment": "Real-wiring example. Point `proven.bin` at your CLI install dir, add a `command` source per tool that can emit a JSON array, and `files` sources for your notes/repos. Tip: run `foundations init` to auto-generate this from what's installed on your machine, or copy ready-made blocks from presets/ (ats, rzq, memory, repos). Save as foundations.config.json or export FOUNDATIONS_CONFIG=/path/to/this.json. Absolute paths recommended for a real setup.",
 
   "proven": {
     "bin": "/usr/local/bin",
@@ -20,7 +20,9 @@
         "args": ["search", "{query}", "--json"],
         "timeout": 8000
       },
-      "map": { "id": "id", "title": "title", "score": "score" }
+      "map": { "id": "id", "title": "title", "score": "score" },
+      "_validate_comment": "Optional: a command that, when it exits 0, promotes a hit to PROVEN via `foundations prove tasks:<id>`. {item}/{id}/{query} are substituted. Omit it and the lead simply stays a claim.",
+      "validate": { "cmd": "your-task-cli", "args": ["get", "{id}"], "timeout": 8000 }
     },
     {
       "name": "content",

@@ -1,0 +1,9 @@
+{
+  "_comment": "Paste into the `sources` array. Bounded pure-Node text search over your local source checkouts. Replace the roots with YOUR code dir(s). The search skips node_modules/.git/dist/etc and caps file size + scan count, so pointing at a big tree stays fast.",
+  "name": "repos",
+  "type": "files",
+  "kind": "code",
+  "why": "source is present, not confirmed to run/work",
+  "roots": ["/home/youruser/repos", "/home/youruser/code"],
+  "exts": [".js", ".ts", ".tsx", ".jsx", ".py", ".sh", ".go", ".md", ".json", ".yaml", ".yml"]
+}

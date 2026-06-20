@@ -1,0 +1,9 @@
+{
+  "_comment": "Paste into the `sources` array. A content/semantic-search CLI that prints a JSON array. Replace `rzq` with your tool. `{query}` -> the idea, `{k}` -> the result limit. `map` reads dotted paths (e.g. `data.title`).",
+  "name": "content",
+  "type": "command",
+  "kind": "published",
+  "why": "live content; published assertions, not independently validated",
+  "search": { "cmd": "rzq", "args": ["semantic", "{query}", "-k", "{k}"], "timeout": 8000 },
+  "map": { "title": "title", "url": "url", "score": "score" }
+}

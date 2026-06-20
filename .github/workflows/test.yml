@@ -17,3 +17,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm test
+      - name: Verify package contents
+        run: npm pack --dry-run
+      - name: Run demo sweep
+        run: node bin/foundations check "vector search caching deploy" --human

@@ -124,11 +124,111 @@ what you wrote down beats what a teammate remembers; that beats the top search
 result. `foundations` makes that order explicit and refuses to blur "proven" with
 "read it somewhere once".
 
+## Set it up in one command
+
+```sh
+foundations init
+```
+
+`init` detects your CLI install dir and which tools/dirs actually exist on this
+machine, then writes a ready-to-use config to
+`$XDG_CONFIG_HOME/foundations/config.json` (default
+`~/.config/foundations/config.json`) — with **absolute paths**, and **only**
+sources whose backing tool or directory is really present (no broken roots, no
+dead commands). `foundations check` picks that config up automatically.
+
+```sh
+foundations init --print            # preview the config, write nothing
+foundations init --force            # overwrite an existing config
+foundations init --config ./fdn.json
+```
+
+It knows a few presets out of the box — `ats` and `rzq` (command sources, detected
+on `PATH`), Codex/Claude **memory** dirs and your **repos** dir (files sources,
+detected by location). Anything not found is skipped, not written. Wire more by
+copying blocks from [`presets/`](presets/).
+
+## Prove a lead
+
+The product is strict on purpose: an unverified lead is not an answer. `prove`
+takes you from a hit to a concrete proof, without silently promoting weak
+evidence:
+
+```sh
+foundations prove proven:vecto          # re-run the tool's liveness check
+foundations prove notes:vector-search.md  # inspect the file (read != ran → stays unverified)
+foundations prove tasks:T-101           # run the source's `validate` command, if configured
+```
+
+Only an actual clean **execution** — a tool that runs (exit 0), or a source's
+configured `validate` command exiting 0 — yields `proven`. Inspecting a file or a
+claim with no validation stays `unverified`, and says so.
+
+## Why each result ranked where it did
+
+Every result carries its reasoning so a JSON consumer (or you) never has to
+reverse-engineer the score:
+
+```json
+{
+  "file": ".../notes/vector-search.md", "score": 4.5,
+  "matched_terms": ["vector", "search"],
+  "filename_matches": ["vector", "search"],
+  "recency_days": 12,
+  "score_explanation": "2 content terms (vector, search) + 2 filename matches×2 (vector, search) + recent +0.5 (12d old)"
+}
+```
+
+File ranking is distinct content terms + filename matches (weighted ×2, a strong
+intent signal) + a small recency boost. `--human` prints the `why ranked:` line
+under each hit.
+
+## Use it from an AI agent
+
+The whole point is to make your agent check your network before it googles. See
+[`AGENTS.md`](AGENTS.md) for copy-paste rules for Codex, Claude, and Cursor — the
+short version: run `foundations check "<idea>"` before any web/MCP/registry
+lookup, build on `proven`, validate `unverified` with `foundations prove`, and go
+`external` only on `no-local-coverage`.
+
+## Is the sweep working, or is there just nothing there?
+
+A configured source can silently return nothing because a command is missing, a
+file root doesn't exist, JSON failed to parse, or a scan hit its limit — which
+looks identical to "no local coverage". Two things fix that:
+
+`foundations check` now carries per-source **diagnostics** (JSON `diagnostics` key;
+a footer in `--human`), so a broken source never reads as an empty one:
+
+```text
+Diagnostics (run `foundations doctor` for detail):
+   ERROR tasks: command not found: your-task-cli
+   WARN  notes: root does not exist: /path/to/notes
+```
+
+`foundations doctor` is the dedicated health check — it exits non-zero if any
+configured source is unusable, so it works as a CI / pre-flight gate:
+
+```text
+foundations doctor
+config: /path/to/foundations.config.json
+
+OK      proven  /usr/local/bin       42 candidates, liveness 8/8
+OK      tasks   /usr/local/bin/ats   valid JSON array (5 rows)
+WARN    notes   /home/you/notes      0 files scanned, 0 matched
+FAIL    repos   /missing/repos       root does not exist
+
+Result: FAIL (1 failing source)
+```
+
 ## Commands
 
 ```
 foundations check "<idea>" [-k N] [--source <names>]   sweep, sorted by trust
 foundations "<idea>"                                    shorthand for check
+foundations init [--print] [--force] [--config <path>]  generate a real config
+foundations prove <source>:<item>                       turn a lead into a proof
+foundations doctor                                      health-check every source
 foundations sources                                     what gets swept, and its trust class
 foundations help
 
