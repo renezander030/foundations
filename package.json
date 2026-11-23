@@ -1,6 +1,6 @@
 {
   "name": "foundations-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Check your own network before you google. A trust-ordered sweep of your proven tools, notes and code, so your AI agent (and you) build on practice, not loose ends.",
   "type": "module",
   "bin": {
